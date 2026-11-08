@@ -71,7 +71,7 @@ On kernels older than 3.14, which have no `MemAvailable`, the script estimates i
 
 ## Installation
 
-You'll need Linux, bash, and a working `sendmail`, `msmtp` or `mail` command. Your RAM is assumed.
+You'll need Linux or macOS, bash, and a working `sendmail`, `msmtp` or `mail` command. Your RAM is assumed.
 
 ```bash
 git clone https://github.com/IainKay/ram-altman.git
@@ -144,7 +144,7 @@ No.
 The memory accounting is. The correspondence isn't.
 
 **Does it work on macOS?**
-No, it reads `/proc/meminfo`. On the other hand, your RAM is probably soldered down, which makes you the hardest target in the global allocation programme.
+Yes. On macOS it reads `sysctl hw.memsize` and `vm_stat`, counting free, inactive and speculative pages as available. On the other hand, your RAM is probably soldered down, which makes you the hardest target in the global allocation programme.
 
 **Why is the threshold 10%?**
 Below that, your machine has suffered enough.

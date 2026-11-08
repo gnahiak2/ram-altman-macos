@@ -76,14 +76,14 @@ mem 16000000 300000 9000000 200000 8000000 500000 100000
 for _ in $(seq 40); do echo 2000-01-01 > "$work/state/last_sent"; "$script"; done
 awk 'BEGIN{RS="=====END=====\n"} NF{n=split($0,l,"\n"); for(i=1;i<=n;i++) if(l[i]=="Hi Sam,"){b=l[i+2]; print b}}' \
     "$work/outbox" > "$work/bodies"
-check "all opening lines used" "$(head -n 10 "$work/bodies" | sort -u | wc -l)" 10
-check "no back-to-back repeat" "$(uniq -d "$work/bodies" | wc -l)" 0
+check "all opening lines used" "$(head -n 10 "$work/bodies" | sort -u | wc -l | tr -d " ")" 10
+check "no back-to-back repeat" "$(uniq -d "$work/bodies" | wc -l | tr -d " ")" 0
 
 # Config errors.
 RAM_ALTMAN_TO='' "$script" 2>/dev/null; check "missing recipient refused" "$?" 1
 
 echo; echo "$pass passed, $fail failed"
-echo; echo "--- real machine status ---"; RAM_ALTMAN_MEMINFO=/proc/meminfo "$script" --status
+echo; echo "--- real machine status ---"; env -u RAM_ALTMAN_MEMINFO "$script" --status
 echo; echo "--- sample dry run ---"
 mem 16000000 300000 9000000 200000 8000000 500000 100000
 "$script" --dry-run

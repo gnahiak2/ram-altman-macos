@@ -29,7 +29,15 @@ SENDER_NAME="${RAM_ALTMAN_FROM_NAME:-}"    # Display name, optional
 THRESHOLD_PCT="${RAM_ALTMAN_THRESHOLD:-10}" # Email when available is above this
 # -----------------------------------------------------------------------------
 
-MEMINFO="${RAM_ALTMAN_MEMINFO:-/proc/meminfo}"
+# RAM_ALTMAN_MEMINFO forces the Linux /proc/meminfo parser (used by the tests).
+OS="$(uname -s)"
+if [[ -n "${RAM_ALTMAN_MEMINFO:-}" || "$OS" != Darwin ]]; then
+    MEMINFO="${RAM_ALTMAN_MEMINFO:-/proc/meminfo}"
+    MEM_SOURCE=linux
+else
+    MEMINFO=""
+    MEM_SOURCE=darwin
+fi
 STATE_DIR="${RAM_ALTMAN_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ram-altman}"
 USAGE_LOG="$STATE_DIR/usage.csv"
 LAST_SENT_FILE="$STATE_DIR/last_sent"
@@ -44,9 +52,37 @@ die() {
     exit 1
 }
 
+# macOS: total from sysctl, the rest from vm_stat page counts.
+#   available = free + inactive + speculative (inactive and speculative pages
+#   can be reclaimed without swapping); cache = inactive + speculative.
+read_memory_darwin() {
+    local bytes
+    bytes=$(sysctl -n hw.memsize) || die "sysctl hw.memsize failed"
+    read -r total_kb available_kb free_kb cache_kb < <(
+        vm_stat | awk -v bytes="$bytes" '
+            /page size of/ { for (i = 1; i <= NF; i++) if ($i == "of") psize = $(i + 1) }
+            /^Pages free:/        { gsub(/\./, "", $3); free = $3 }
+            /^Pages inactive:/    { gsub(/\./, "", $3); inactive = $3 }
+            /^Pages speculative:/ { gsub(/\./, "", $3); spec = $3 }
+            END {
+                if (psize == 0) psize = 4096
+                kb = psize / 1024
+                total = bytes / 1024
+                cache = (inactive + spec) * kb
+                free_kb = free * kb
+                available = free_kb + cache
+                if (available > total) available = total
+                printf "%d %d %d %d\n", total, available, free_kb, cache
+            }'
+    )
+}
+
 # Sets: total_kb, available_kb, used_kb, free_kb, cache_kb, available_pct
 read_memory() {
-    [[ -r "$MEMINFO" ]] || die "cannot read $MEMINFO (this script needs Linux)"
+  if [[ "$MEM_SOURCE" == darwin ]]; then
+    read_memory_darwin
+  else
+    [[ -r "$MEMINFO" ]] || die "cannot read $MEMINFO"
 
     read -r total_kb available_kb free_kb cache_kb < <(
         awk '
@@ -67,8 +103,9 @@ read_memory() {
             }
         ' "$MEMINFO"
     )
+  fi
 
-    (( total_kb > 0 )) || die "could not find MemTotal in $MEMINFO"
+    (( total_kb > 0 )) || die "could not read total memory"
 
     used_kb=$(( total_kb - available_kb ))
     available_pct=$(awk -v a="$available_kb" -v t="$total_kb" \
@@ -117,7 +154,10 @@ pick() {
 
     bag="$STATE_DIR/bag_$name"
     if [[ ! -s "$bag" ]]; then
-        seq 0 $(( count - 1 )) | shuf > "$bag"
+        seq 0 $(( count - 1 )) |
+            awk -v seed="$(( RANDOM * 32768 + RANDOM ))" \
+                'BEGIN { srand(seed) } { print rand() "\t" $0 }' |
+            sort -n | cut -f2 > "$bag"
         # Stop the last pick of the old round opening the new one.
         last=$(cat "$bag.last" 2>/dev/null || true)
         if [[ "$(head -n 1 "$bag")" == "$last" ]] && (( count > 1 )); then
@@ -265,6 +305,15 @@ main() {
     if command -v flock > /dev/null; then
         exec 9> "$STATE_DIR/lock"
         flock -n 9 || exit 0
+    else
+        # No flock (stock macOS): fall back to an atomic mkdir lock.
+        # A lock older than 10 minutes is treated as stale.
+        local lockdir="$STATE_DIR/lock.d"
+        if [[ -n "$(find "$lockdir" -maxdepth 0 -mmin +10 2>/dev/null)" ]]; then
+            rmdir "$lockdir" 2>/dev/null || true
+        fi
+        mkdir "$lockdir" 2>/dev/null || exit 0
+        trap "rmdir '$lockdir' 2>/dev/null || true" EXIT
     fi
 
     read_memory
